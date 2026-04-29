@@ -24,6 +24,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install yt-dlp
 
       - name: Extract video ID
         id: video_id
@@ -46,14 +47,14 @@ jobs:
           " > video_id.txt
           echo "video_id=$(cat video_id.txt)" >> $GITHUB_OUTPUT
 
-      - name: Transcribe video
+      - name: Transcribe video using yt-dlp
         id: transcribe
         run: |
           python -c "
-          from youtube_transcript_api import YouTubeTranscriptApi
-          from youtube_transcript_api._errors import NoTranscriptFound, VideoUnavailable
+          import yt_dlp
           import sys
 
+          url = '${{ inputs.video_url }}'
           video_id = '${{ steps.video_id.outputs.video_id }}'
 
           if video_id == 'INVALID_URL':
@@ -61,31 +62,70 @@ jobs:
               sys.exit(1)
 
           try:
-              api = YouTubeTranscriptApi()
-              transcript = api.fetch(video_id)
+              ydl_opts = {
+                  'quiet': True,
+                  'no_warnings': True,
+                  'writesubtitles': True,
+                  'writeautomaticsub': True,
+                  'subtitleslangs': ['en'],
+                  'skip_download': True,
+              }
 
-              # Combine transcript segments into a single text
-              text = ' '.join([segment.text for segment in transcript])
+              with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                  info = ydl.extract_info(url, download=False)
 
-              # Limit transcript size (roughly 100k characters)
-              max_length = 100000
-              if len(text) > max_length:
-                  text = text[:max_length] + '...'
+                  # Try to get subtitles
+                  subtitles = info.get('subtitles', {})
+                  auto_subs = info.get('automatic_captions', {})
 
-              # Write to file
-              with open('transcription.txt', 'w') as f:
-                  f.write(text)
+                  # Prefer manual subtitles, fall back to auto-generated
+                  sub_data = subtitles.get('en', []) or auto_subs.get('en', [])
 
-              print(f'Successfully transcribed video ({len(text)} characters)')
+                  if not sub_data:
+                      print('Error: No subtitles available for this video')
+                      sys.exit(1)
 
-          except NoTranscriptFound:
-              print('Error: No transcript available for this video')
-              sys.exit(1)
-          except VideoUnavailable:
-              print('Error: Video is unavailable')
-              sys.exit(1)
+                  # Download the subtitle file
+                  sub_url = sub_data[0]['url']
+
+                  import requests
+                  response = requests.get(sub_url)
+                  response.raise_for_status()
+
+                  # Parse WebVTT format and extract text
+                  import re
+                  vtt_content = response.text
+
+                  # Remove WebVTT header and timestamps
+                  lines = vtt_content.split('\n')
+                  text_lines = []
+
+                  for line in lines:
+                      # Skip timestamps, empty lines, and WebVTT metadata
+                      if re.match(r'^\d{2}:', line) or line.strip() == '' or line.startswith('WEBVTT') or line.startswith('Kind:') or line.startswith('Language:'):
+                          continue
+                      # Remove HTML tags and clean up
+                      clean_line = re.sub(r'<[^>]+>', '', line)
+                      if clean_line.strip():
+                          text_lines.append(clean_line.strip())
+
+                  text = ' '.join(text_lines)
+
+                  # Limit transcript size
+                  max_length = 100000
+                  if len(text) > max_length:
+                      text = text[:max_length] + '...'
+
+                  # Write to file
+                  with open('transcription.txt', 'w', encoding='utf-8') as f:
+                      f.write(text)
+
+                  print(f'Successfully transcribed video ({len(text)} characters)')
+
           except Exception as e:
               print(f'Error: {str(e)}')
+              import traceback
+              traceback.print_exc()
               sys.exit(1)
           "
 
