@@ -30,7 +30,7 @@ def get_transcript(url):
         transcript = api.fetch(video_id)
 
         # Combine transcript segments into a single text
-        text = ' '.join([segment['text'] for segment in transcript])
+        text = ' '.join([segment.text for segment in transcript])
 
         # Limit transcript size (roughly 100k characters)
         max_length = 100000

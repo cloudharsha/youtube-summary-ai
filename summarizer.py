@@ -78,19 +78,47 @@ def _summarize_with_anthropic(transcript):
             api_key=os.getenv('ANTHROPIC_AUTH_TOKEN', 'freecc')
         )
 
-        response = client.messages.create(
-            model="claude-3-haiku-20240307",
-            max_tokens=1000,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Please summarize this YouTube transcript. "
-                    f"Provide a concise summary with TL;DR, key points, and actionable insights:\n\n{transcript}"
-                }
-            ]
-        )
+        # Try streaming first (for local LLM servers that use SSE)
+        try:
+            response = client.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=2000,  # Increased to allow for both thinking and response
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Please summarize this YouTube transcript. "
+                        f"Provide a concise summary with TL;DR, key points, and actionable insights:\n\n{transcript}"
+                    }
+                ],
+                stream=True
+            )
 
-        return response.content[0].text
+            # Collect the streamed response
+            full_text = ""
+            for chunk in response:
+                if chunk.type == "content_block_delta":
+                    # Handle both text and thinking deltas
+                    if hasattr(chunk.delta, 'text'):
+                        full_text += chunk.delta.text
+                    # Note: we ignore thinking deltas as they're internal reasoning
+
+            return full_text if full_text else "No response generated"
+
+        except Exception as stream_error:
+            # Fall back to non-streaming if streaming fails
+            response = client.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=2000,  # Increased to allow for both thinking and response
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Please summarize this YouTube transcript. "
+                        f"Provide a concise summary with TL;DR, key points, and actionable insights:\n\n{transcript}"
+                    }
+                ]
+            )
+
+            return response.content[0].text
 
     except ImportError:
         raise ValueError(
