@@ -1,0 +1,113 @@
+name: Video Transcription
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube video URL to transcribe'
+        required: true
+        type: string
+
+jobs:
+  transcribe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Extract video ID
+        id: video_id
+        run: |
+          python -c "
+          import re
+          import sys
+          url = '${{ inputs.video_url }}'
+          patterns = [
+              r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)',
+              r'youtube\.com\/watch\?.*v=([^&\n?#]+)'
+          ]
+          for pattern in patterns:
+              match = re.search(pattern, url)
+              if match:
+                  print(match.group(1))
+                  sys.exit(0)
+          print('INVALID_URL')
+          sys.exit(1)
+          " > video_id.txt
+          echo "video_id=$(cat video_id.txt)" >> $GITHUB_OUTPUT
+
+      - name: Transcribe video
+        id: transcribe
+        run: |
+          python -c "
+          from youtube_transcript_api import YouTubeTranscriptApi
+          from youtube_transcript_api._errors import NoTranscriptFound, VideoUnavailable
+          import sys
+
+          video_id = '${{ steps.video_id.outputs.video_id }}'
+
+          if video_id == 'INVALID_URL':
+              print('Error: Invalid YouTube URL')
+              sys.exit(1)
+
+          try:
+              api = YouTubeTranscriptApi()
+              transcript = api.fetch(video_id)
+
+              # Combine transcript segments into a single text
+              text = ' '.join([segment.text for segment in transcript])
+
+              # Limit transcript size (roughly 100k characters)
+              max_length = 100000
+              if len(text) > max_length:
+                  text = text[:max_length] + '...'
+
+              # Write to file
+              with open('transcription.txt', 'w') as f:
+                  f.write(text)
+
+              print(f'Successfully transcribed video ({len(text)} characters)')
+
+          except NoTranscriptFound:
+              print('Error: No transcript available for this video')
+              sys.exit(1)
+          except VideoUnavailable:
+              print('Error: Video is unavailable')
+              sys.exit(1)
+          except Exception as e:
+              print(f'Error: {str(e)}')
+              sys.exit(1)
+          "
+
+      - name: Upload transcription as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcription-${{ steps.video_id.outputs.video_id }}
+          path: transcription.txt
+          retention-days: 0
+          expiration: 1 hour
+
+      - name: Display transcription summary
+        run: |
+          echo "=== Transcription Summary ==="
+          echo "Video ID: ${{ steps.video_id.outputs.video_id }}"
+          echo "Video URL: ${{ inputs.video_url }}"
+          echo "Character count: $(wc -c < transcription.txt)"
+          echo "Word count: $(wc -w < transcription.txt)"
+          echo ""
+          echo "First 500 characters:"
+          head -c 500 transcription.txt
+          echo ""
+          echo "..."
+          echo ""
+          echo "Full transcription available as artifact"
